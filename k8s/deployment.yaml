@@ -6,7 +6,7 @@ metadata:
   labels:
     app: techsolutions
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: techsolutions
@@ -23,7 +23,7 @@ spec:
         resources:
           requests:
             memory: "64Mi"
-            cpu: "250m"
+            cpu: "100m"
           limits:
             memory: "128Mi"
             cpu: "500m"
