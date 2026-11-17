@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         DOCKER_HUB_REPO = 'syedumer98488/techsolutions-app'
-        K8S_CLUSTER_NAME = 'microservices-cluster'
+        K8S_CLUSTER_NAME = 'devops-practice'
         AWS_REGION = 'ap-south-1'
         NAMESPACE = 'default'
         APP_NAME = 'techsolutions'
