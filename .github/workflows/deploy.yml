@@ -1,1 +1,148 @@
+name: Build and Deploy to EKS
 
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  DOCKER_HUB_REPO: syedumer98488/techsolutions-app
+  K8S_CLUSTER_NAME: devops-practice
+  AWS_REGION: ap-south-1
+  NAMESPACE: default
+  APP_NAME: techsolutions
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      # 1. Checkout source code
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # 2. Configure Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 3. Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 4. Build and push Docker image
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKER_HUB_REPO }}:${{ github.run_number }}
+            ${{ env.DOCKER_HUB_REPO }}:latest
+
+      # 5. Configure AWS credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 6. Install kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      # 7. Connect to EKS cluster
+      - name: Update EKS Kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "$K8S_CLUSTER_NAME"
+
+          kubectl config current-context
+          kubectl get nodes
+
+      # 8. Deploy application to Kubernetes
+      - name: Deploy Application
+        run: |
+          IMAGE="${DOCKER_HUB_REPO}:${GITHUB_RUN_NUMBER}"
+
+          sed -i -E "s|(^[[:space:]]*image:).*|\1 ${IMAGE}|" k8s/deployment.yaml
+
+          kubectl apply -n "$NAMESPACE" -f k8s/deployment.yaml
+
+          kubectl rollout status deployment/${APP_NAME}-deployment \
+            -n "$NAMESPACE" \
+            --timeout=300s
+
+          kubectl get pods -l app=${APP_NAME} -n "$NAMESPACE"
+          kubectl get svc ${APP_NAME}-service -n "$NAMESPACE"
+
+      # 9. Deploy Ingress
+      - name: Deploy Ingress
+        run: |
+          kubectl apply -n "$NAMESPACE" -f k8s/ingress.yaml
+
+          kubectl get ingress ${APP_NAME}-ingress -n "$NAMESPACE"
+          kubectl describe ingress ${APP_NAME}-ingress -n "$NAMESPACE"
+
+      # 10. Wait for Ingress LoadBalancer URL
+      - name: Get Ingress URL
+        run: |
+          echo "Waiting for Ingress LoadBalancer..."
+
+          for i in {1..60}; do
+            RESULT=$(kubectl get svc ingress-nginx-controller \
+              -n ingress-nginx \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+            if [ -n "$RESULT" ]; then
+              echo "INGRESS_URL=http://${RESULT}" >> "$GITHUB_ENV"
+              echo "Ingress URL: http://${RESULT}"
+              break
+            fi
+
+            echo "Waiting for LoadBalancer... attempt $i"
+            sleep 10
+          done
+
+          if [ -z "$RESULT" ]; then
+            echo "LoadBalancer hostname was not assigned."
+            exit 1
+          fi
+
+      # 11. Test application endpoints
+      - name: Test Application
+        run: |
+          echo "Application URL: $INGRESS_URL"
+
+          for path in / /about /services /contact; do
+            echo "Testing ${INGRESS_URL}${path}"
+
+            curl --fail --retry 5 --retry-delay 5 \
+              --retry-all-errors \
+              -I "${INGRESS_URL}${path}"
+          done
+
+      # 12. Deployment completed
+      - name: Deployment Success
+        if: success()
+        run: |
+          echo "================================"
+          echo "DEPLOYMENT SUCCESSFUL!"
+          echo "Application URL: $INGRESS_URL"
+          echo "================================"
+
+      - name: Deployment Failed
+        if: failure()
+        run: |
+          echo "Pipeline failed. Check the GitHub Actions logs."
